@@ -21,6 +21,7 @@ MONGO_PASSWORD = os.getenv("MONGO_PASSWORD")
 MONGO_HOST = os.getenv("MONGO_HOST")
 MONGO_PORT = int(os.getenv("MONGO_PORT", 27017))
 MONGO_DB = os.getenv("MONGO_DB")
+MACHINE_ID = os.getenv("MACHINE_ID", "2")
 API_URL = "http://82.112.254.77:8000/queries?country=usa_blockdata&machine_id=2"
 
 # MongoDB setup
@@ -66,7 +67,7 @@ async def main():
                         "latitude": query["latitude"],
                         "longitude": query["longitude"],
                         "zoom_level": query["zoom_level"],
-                        "machine_id": query["machine_id"],
+                        "machine_id": MACHINE_ID,
                         "source_query_url": query["query_url"],
                         "place_urls": place_urls,
                         "timestamp": datetime.utcnow(),
