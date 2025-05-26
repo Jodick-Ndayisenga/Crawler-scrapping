@@ -1,0 +1,4 @@
+crawlee==0.6.5
+playwright==1.51.0
+python-dotenv==1.1.0
+requests==2.32.3
