@@ -35,6 +35,9 @@ collection = mongo_db["business_links"]
 query_metadata = {}
 place_links_temp: List[str] = []
 
+import shutil
+if os.path.exists('./storage'):
+    shutil.rmtree('./storage')
 # Crawler setup
 concurrency = ConcurrencySettings(
     min_concurrency=FETCHER_MIN_CONCURRENCY,
@@ -48,9 +51,9 @@ crawler = PlaywrightCrawler(
 )
 
 lock = asyncio.Lock()
-
+MAX_PARALLEL_QUERIES = 2  # Limit parallel queries to avoid overloading
 async def main():
-    print(f"🚀 Starting Google Maps scraper")
+    print("🚀 Starting Google Maps scraper")
     asyncio.create_task(log_memory_usage())
 
     while True:
@@ -58,28 +61,63 @@ async def main():
             queries = await fetch_queries()
             documents = []
 
-            for query in queries:
-                place_urls = await run_single_query(query)
-                if place_urls:
-                    documents.append({
-                        "query_id": query["id"],
-                        "industry": query["industry"],
-                        "latitude": query["latitude"],
-                        "longitude": query["longitude"],
-                        "zoom_level": query["zoom_level"],
-                        "machine_id": MACHINE_ID,
-                        "source_query_url": query["query_url"],
-                        "place_urls": place_urls,
-                        "timestamp": datetime.utcnow(),
-                        "status": "processed",	
-                    })
+            sem = asyncio.Semaphore(MAX_PARALLEL_QUERIES)
+
+            async def handle_query(query):
+                async with sem:
+                    place_urls = await run_single_query_with_new_crawler(query)
+                    if place_urls:
+                        documents.append({
+                            "query_id": query["id"],
+                            "industry": query["industry"],
+                            "latitude": query["latitude"],
+                            "longitude": query["longitude"],
+                            "zoom_level": query["zoom_level"],
+                            "machine_id": MACHINE_ID,
+                            "source_query_url": query["query_url"],
+                            "place_urls": place_urls,
+                            "timestamp": datetime.utcnow(),
+                            "status": "processed",
+                        })
+
+            await asyncio.gather(*(handle_query(q) for q in queries))
 
             if documents:
                 collection.insert_many(documents)
                 print(f"✅ Inserted {len(documents)} documents into MongoDB.")
         except Exception as e:
             print(f"❌ Error in main loop: {e}")
+
         await asyncio.sleep(10)
+
+async def run_single_query_with_new_crawler(query: Dict) -> List[str]:
+    links = []
+    lock = asyncio.Lock()
+
+    crawler_instance = PlaywrightCrawler(
+        concurrency_settings=ConcurrencySettings(min_concurrency=1, max_concurrency=3),
+        request_handler_timeout=timedelta(minutes=10),
+        max_request_retries=2,
+    )
+
+    @crawler_instance.router.default_handler
+    async def handle_request(context: PlaywrightCrawlingContext):
+        try:
+            await google_map_consent_check(context)
+            place_urls = await scroll_and_extract_links(context)
+
+            async with lock:
+                links.extend(place_urls)
+
+            context.log.info(f"✅ Scraped {len(place_urls)} links from {context.request.url}")
+        except Exception as e:
+            context.log.error(f"❌ Error scraping {context.request.url}: {e}")
+        finally:
+            await context.page.close()
+            gc.collect()
+
+    await crawler_instance.run([query["query_url"]])
+    return links
 
 async def fetch_queries() -> List[Dict]:
     response = requests.get(API_URL)
